@@ -16,7 +16,6 @@ brew install glfw
 2. Configure and build with CMake:
 
 ```bash
-cd /Users/sira/Documents/chula/y4s1/cg
 cmake -S . -B build
 cmake --build build
 ```
