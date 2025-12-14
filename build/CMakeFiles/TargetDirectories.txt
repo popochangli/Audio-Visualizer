@@ -1,0 +1,4 @@
+/Users/sira/Documents/chula/y4s1/cg/build/CMakeFiles/audio_visualizer.dir
+/Users/sira/Documents/chula/y4s1/cg/build/CMakeFiles/copy_shaders.dir
+/Users/sira/Documents/chula/y4s1/cg/build/CMakeFiles/edit_cache.dir
+/Users/sira/Documents/chula/y4s1/cg/build/CMakeFiles/rebuild_cache.dir
