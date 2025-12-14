@@ -25,5 +25,6 @@ void main()
     float pulse = vOnsetPulse;
     vec3 color = baseColor * (0.4 + 0.6 * nd) * brightness * (1.0 + 1.5 * pulse);
 
-    FragColor = vec4(color, 1.0);
+    // Slight transparency for nicer additive blending of particles
+    FragColor = vec4(color, 0.8);
 }

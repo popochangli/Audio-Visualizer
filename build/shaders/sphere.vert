@@ -1,7 +1,6 @@
 #version 150 core
 
-in vec3 aPos;
-in vec3 aNormal;
+in vec3 aPos; // particle position in model space
 
 uniform mat4 uProjection;
 uniform mat4 uView;
@@ -10,13 +9,20 @@ uniform float uSHCoeffs[9];
 uniform float uDisplacementScale;
 uniform float uOnsetPulse;
 uniform float uBandLevel;
+uniform float uPointSize;
 
 out vec3 vNormal;
 out float vOnsetPulse;
 out vec3 vWorldPos;
 
-vec3 applySH(vec3 worldPos, vec3 normal)
+void main()
 {
+    // Use radial direction as surface normal for particles on/inside the sphere
+    vec3 normal = normalize(aPos);
+    if (!all(greaterThan(abs(normal), vec3(0.0)))) {
+        normal = vec3(0.0, 1.0, 0.0);
+    }
+
     float x = normal.x;
     float y = normal.y;
     float z = normal.z;
@@ -37,23 +43,16 @@ vec3 applySH(vec3 worldPos, vec3 normal)
         sh += uSHCoeffs[i] * Y[i];
     }
 
-    // Per-sphere band level scales deformation strength
     float bandFactor = 0.5 + 1.5 * clamp(uBandLevel, 0.0, 1.0);
-    // Add a bit of onset pulse to exaggerate movement
     float pulseScale = 1.0 + 0.5 * uOnsetPulse;
+
+    vec3 worldPos = (uModel * vec4(aPos, 1.0)).xyz;
     vec3 displaced = worldPos + normal * sh * uDisplacementScale * bandFactor * pulseScale;
-    return displaced;
-}
 
-void main()
-{
-    vec3 worldNormal = normalize((uModel * vec4(aNormal, 0.0)).xyz);
-    vec3 worldPos    = (uModel * vec4(aPos, 1.0)).xyz;
-    vec3 displaced   = applySH(worldPos, worldNormal);
-
-    vNormal     = worldNormal;
+    vNormal     = normal;
     vOnsetPulse = uOnsetPulse;
     vWorldPos   = displaced;
 
     gl_Position = uProjection * uView * vec4(displaced, 1.0);
+    gl_PointSize = uPointSize;
 }

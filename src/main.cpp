@@ -170,66 +170,28 @@ static Vec3 vec3_cross(const Vec3 &a, const Vec3 &b)
                 a.x * b.y - a.y * b.x};
 }
 
-// Sphere mesh generation ----------------------------------------------------------------
+// Particle system ------------------------------------------------------------------------
 
-struct Vertex
+struct Particle
 {
-    float px, py, pz;
-    float nx, ny, nz;
+    Vec3 pos;
+    Vec3 vel;
+    Vec3 basePos;
+    float lifetime = 0.0f;
+    float maxLifetime = 0.0f;
+    float beatEffect = 0.0f;
 };
 
-struct Mesh
+// Simple hash-based value noise for particle motion
+static float hash31(float x, float y, float z)
 {
-    std::vector<Vertex> vertices;
-    std::vector<unsigned int> indices;
-};
+    float f = std::sin(x * 12.9898f + y * 78.233f + z * 37.719f) * 43758.5453f;
+    return f - std::floor(f);
+}
 
-static Mesh generateSphere(unsigned int latSegments, unsigned int lonSegments, float radius)
+static float noise3D(float x, float y, float z)
 {
-    Mesh mesh;
-    for (unsigned int y = 0; y <= latSegments; ++y)
-    {
-        for (unsigned int x = 0; x <= lonSegments; ++x)
-        {
-            float u = static_cast<float>(x) / static_cast<float>(lonSegments);
-            float v = static_cast<float>(y) / static_cast<float>(latSegments);
-            float theta = v * static_cast<float>(M_PI);
-            float phi = u * 2.0f * static_cast<float>(M_PI);
-
-            float sx = std::sin(theta) * std::cos(phi);
-            float sy = std::cos(theta);
-            float sz = std::sin(theta) * std::sin(phi);
-
-            Vertex vert{};
-            vert.px = radius * sx;
-            vert.py = radius * sy;
-            vert.pz = radius * sz;
-            vert.nx = sx;
-            vert.ny = sy;
-            vert.nz = sz;
-            mesh.vertices.push_back(vert);
-        }
-    }
-
-    for (unsigned int y = 0; y < latSegments; ++y)
-    {
-        for (unsigned int x = 0; x < lonSegments; ++x)
-        {
-            unsigned int i0 = y * (lonSegments + 1) + x;
-            unsigned int i1 = i0 + 1;
-            unsigned int i2 = i0 + lonSegments + 1;
-            unsigned int i3 = i2 + 1;
-
-            mesh.indices.push_back(i0);
-            mesh.indices.push_back(i2);
-            mesh.indices.push_back(i1);
-
-            mesh.indices.push_back(i1);
-            mesh.indices.push_back(i2);
-            mesh.indices.push_back(i3);
-        }
-    }
-    return mesh;
+    return hash31(x, y, z) * 2.0f - 1.0f; // range [-1, 1]
 }
 
 // Shader compilation helpers -------------------------------------------------------------
@@ -455,9 +417,10 @@ struct AnalysisResult
 };
 
 // Multiple spheres, each reacting to different frequency bands
-constexpr int kGridX = 5;
-constexpr int kGridZ = 5;
-constexpr int kNumSpheres = kGridX * kGridZ; // 5x5 grid
+// For this version we use a single sphere (1x1 grid)
+constexpr int kGridX = 1;
+constexpr int kGridZ = 1;
+constexpr int kNumSpheres = kGridX * kGridZ; // 1 sphere
 std::array<float, kNumSpheres> bandLevels{};
 std::array<Vec3, kNumSpheres> sphereOffsets{};
 
@@ -467,7 +430,8 @@ std::array<int, kNumSpheres> sphereBandEnd{};
 
 static void initSphereLayout()
 {
-    // Arrange spheres in a 5x5 grid on X-Z plane, centered around origin.
+    // Arrange spheres in a grid on X-Z plane, centered around origin.
+    // With kGridX = kGridZ = 1 this is just a single sphere at the origin.
     float spacing = 6.0f; // distance between spheres
     int index = 0;
     for (int z = 0; z < kGridZ; ++z)
@@ -478,12 +442,9 @@ static void initSphereLayout()
             float fz = (static_cast<float>(z) - (kGridZ - 1) * 0.5f) * spacing;
             sphereOffsets[index] = Vec3{fx, 0.0f, fz};
 
-            // Distribute 9 bands across X direction, repeat along Z
-            int bandIndex = x * 2; // 0,2,4,6,8 (clamped below)
-            if (bandIndex > 8)
-                bandIndex = 8;
-            int start = bandIndex;
-            int end = std::min(bandIndex + 1, 8);
+            // Single sphere: react to the full range of 9 bands
+            int start = 0;
+            int end = 8;
             sphereBandStart[index] = start;
             sphereBandEnd[index] = end;
 
@@ -624,8 +585,30 @@ static void framebuffer_size_callback(GLFWwindow * /*window*/, int width, int he
 
 // Main ----------------------------------------------------------------------------------
 
-int main()
+int main(int argc, char **argv)
 {
+    int particleCount = 20000;
+    for (int i = 1; i < argc; ++i)
+    {
+        std::string arg = argv[i];
+        if (arg == "--particles" && i + 1 < argc)
+        {
+            int value = std::atoi(argv[i + 1]);
+            if (value > 0)
+            {
+                // Clamp to a reasonable range to avoid extreme GPU/CPU load
+                if (value < 1000)
+                    value = 1000;
+                if (value > 1000000)
+                    value = 1000000;
+                particleCount = value;
+            }
+            ++i;
+        }
+    }
+
+    std::cout << "Particle count: " << particleCount << std::endl;
+
     if (!glfwInit())
     {
         std::cerr << "Failed to initialize GLFW" << std::endl;
@@ -652,6 +635,9 @@ int main()
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
 
     glEnable(GL_DEPTH_TEST);
+    glEnable(GL_PROGRAM_POINT_SIZE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
 
     // Capture mouse for FPS-style camera look
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
@@ -681,24 +667,49 @@ int main()
     // Initialize sphere grid layout and band mapping
     initSphereLayout();
 
-    // Build sphere mesh and OpenGL buffers
-    Mesh sphere = generateSphere(64, 64, 1.0f);
-    GLuint vao = 0, vbo = 0, ebo = 0;
+    // Build particle system and OpenGL buffers
+    std::vector<Particle> particles(particleCount);
+
+    const float sphereRadius = 1.0f;
+    const float innerSphereRadius = 0.25f;
+    const float particleLifetimeMin = 1.0f;
+    const float particleLifetimeMax = 3.0f;
+
+    for (int i = 0; i < particleCount; ++i)
+    {
+        float u1 = static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX);
+        float u2 = static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX);
+        float u3 = static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX);
+
+        float theta = 2.0f * static_cast<float>(M_PI) * u1;
+        float phi = std::acos(2.0f * u2 - 1.0f);
+        float r = std::cbrt(u3) * (sphereRadius * innerSphereRadius);
+
+        float x = r * std::sin(phi) * std::cos(theta);
+        float y = r * std::sin(phi) * std::sin(theta);
+        float z = r * std::cos(phi);
+
+        particles[i].pos = Vec3{x, y, z};
+        particles[i].basePos = particles[i].pos;
+        particles[i].vel = Vec3{0.0f, 0.0f, 0.0f};
+
+        float lifeRand = static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX);
+        float life = particleLifetimeMin + (particleLifetimeMax - particleLifetimeMin) * lifeRand;
+        particles[i].lifetime = life;
+        particles[i].maxLifetime = life;
+        particles[i].beatEffect = 0.0f;
+    }
+
+    GLuint vao = 0, vbo = 0;
     glGenVertexArrays(1, &vao);
     glGenBuffers(1, &vbo);
-    glGenBuffers(1, &ebo);
 
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, sphere.vertices.size() * sizeof(Vertex), sphere.vertices.data(), GL_STATIC_DRAW);
-
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sphere.indices.size() * sizeof(unsigned int), sphere.indices.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, particleCount * sizeof(Vec3), nullptr, GL_DYNAMIC_DRAW);
 
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)0);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)(3 * sizeof(float)));
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vec3), (void *)0);
 
     glBindVertexArray(0);
 
@@ -712,6 +723,7 @@ int main()
     GLint locDispScale = glGetUniformLocation(program, "uDisplacementScale");
     GLint locOnsetPulse = glGetUniformLocation(program, "uOnsetPulse");
     GLint locBandLevel = glGetUniformLocation(program, "uBandLevel");
+    GLint locPointSize = glGetUniformLocation(program, "uPointSize");
 
     int width = 1280, height = 720;
     glfwGetFramebufferSize(window, &width, &height);
@@ -730,6 +742,11 @@ int main()
     float lastSnareTime = -10.0f;
 
     std::vector<float> shCoeffs(9, 0.0f);
+
+    const float noiseScale = 4.0f;
+    const float noiseSpeed = 0.1f;
+    const float turbulenceStrength = 0.005f;
+    const float beatStrength = 0.01f;
 
     while (!glfwWindowShouldClose(window))
     {
@@ -900,30 +917,129 @@ int main()
         Vec3 center = vec3_add(cameraPos, camFront);
         Mat4 view = mat4_look_at(cameraPos, center, worldUp);
 
+        // Update particle system (CPU side, similar to main.js logic)
+        {
+            float timeFactor = static_cast<float>(tNow);
+
+            for (int i = 0; i < particleCount; ++i)
+            {
+                Particle &p = particles[i];
+
+                p.lifetime -= static_cast<float>(deltaTime);
+
+                // Apply simple 3D noise as turbulence
+                float nx = noise3D(p.pos.x * noiseScale + timeFactor * noiseSpeed, p.pos.y * noiseScale, p.pos.z * noiseScale);
+                float ny = noise3D(p.pos.x * noiseScale, p.pos.y * noiseScale + timeFactor * noiseSpeed, p.pos.z * noiseScale);
+                float nz = noise3D(p.pos.x * noiseScale, p.pos.y * noiseScale, p.pos.z * noiseScale + timeFactor * noiseSpeed);
+
+                p.vel.x += nx * turbulenceStrength;
+                p.vel.y += ny * turbulenceStrength;
+                p.vel.z += nz * turbulenceStrength;
+
+                // Beat effect pushes particles outwards from center
+                if (onsetPulse > 0.1f)
+                {
+                    p.beatEffect = 1.0f;
+                }
+                p.beatEffect *= 0.95f;
+
+                float dist = std::sqrt(p.pos.x * p.pos.x + p.pos.y * p.pos.y + p.pos.z * p.pos.z);
+                if (p.beatEffect > 0.01f && dist > 0.0f)
+                {
+                    float dx = p.pos.x / dist;
+                    float dy = p.pos.y / dist;
+                    float dz = p.pos.z / dist;
+                    float push = p.beatEffect * beatStrength;
+                    p.vel.x += dx * push;
+                    p.vel.y += dy * push;
+                    p.vel.z += dz * push;
+                }
+
+                // Integrate motion
+                p.pos.x += p.vel.x * static_cast<float>(deltaTime);
+                p.pos.y += p.vel.y * static_cast<float>(deltaTime);
+                p.pos.z += p.vel.z * static_cast<float>(deltaTime);
+
+                // Dampen velocity
+                p.vel.x *= 0.98f;
+                p.vel.y *= 0.98f;
+                p.vel.z *= 0.98f;
+
+                // Keep particles within sphere radius
+                dist = std::sqrt(p.pos.x * p.pos.x + p.pos.y * p.pos.y + p.pos.z * p.pos.z);
+                if (dist > sphereRadius)
+                {
+                    float overflow = dist - sphereRadius;
+                    float pullback = overflow * 0.1f;
+                    if (dist > 0.0f)
+                    {
+                        float dx = p.pos.x / dist;
+                        float dy = p.pos.y / dist;
+                        float dz = p.pos.z / dist;
+                        p.pos.x -= dx * pullback;
+                        p.pos.y -= dy * pullback;
+                        p.pos.z -= dz * pullback;
+                    }
+                    p.vel.x *= 0.9f;
+                    p.vel.y *= 0.9f;
+                    p.vel.z *= 0.9f;
+                }
+
+                // Respawn dead particles
+                if (p.lifetime <= 0.0f)
+                {
+                    float u1 = static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX);
+                    float u2 = static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX);
+                    float u3 = static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX);
+
+                    float theta = 2.0f * static_cast<float>(M_PI) * u1;
+                    float phi = std::acos(2.0f * u2 - 1.0f);
+                    float r = std::cbrt(u3) * (sphereRadius * innerSphereRadius);
+
+                    float x = r * std::sin(phi) * std::cos(theta);
+                    float y = r * std::sin(phi) * std::sin(theta);
+                    float z = r * std::cos(phi);
+
+                    p.pos = Vec3{x, y, z};
+                    p.basePos = p.pos;
+                    p.vel = Vec3{0.0f, 0.0f, 0.0f};
+
+                    float lifeRand = static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX);
+                    float life = particleLifetimeMin + (particleLifetimeMax - particleLifetimeMin) * lifeRand;
+                    p.lifetime = life;
+                    p.maxLifetime = life;
+                    p.beatEffect = 0.0f;
+                }
+            }
+
+            // Upload updated positions to GPU
+            std::vector<Vec3> positions(particleCount);
+            for (int i = 0; i < particleCount; ++i)
+            {
+                positions[i] = particles[i].pos;
+            }
+
+            glBindBuffer(GL_ARRAY_BUFFER, vbo);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, particleCount * sizeof(Vec3), positions.data());
+        }
+
         glUseProgram(program);
         glUniformMatrix4fv(locProj, 1, GL_FALSE, proj.m);
         glUniformMatrix4fv(locView, 1, GL_FALSE, view.m);
-        // Stronger SH displacement for clearer deformation
         glUniform1f(locDispScale, 1.2f);
         glUniform1f(locOnsetPulse, onsetPulse);
         glUniform1fv(locSHCoeffs, 9, shCoeffs.data());
+        glUniform1f(locPointSize, 3.0f);
 
         glBindVertexArray(vao);
 
-        for (int s = 0; s < kNumSpheres; ++s)
-        {
-            Vec3 pos = sphereOffsets[s];
-            float bandLevel = bandLevels[s];
+        float bandLevel = bandLevels[0];
+        Mat4 modelRS = mat4_scale(1.0f + kickPulse * 0.4f + bandLevel * 0.3f);
+        Mat4 model = mat4_mul(mat4_translate(0.0f, 0.0f, 0.0f), modelRS);
+        glUniformMatrix4fv(locModel, 1, GL_FALSE, model.m);
+        glUniform1f(locBandLevel, bandLevel);
 
-            // No automatic rotation; only scale by kick and band level
-            Mat4 modelRS = mat4_scale(1.0f + kickPulse * 0.4f + bandLevel * 0.3f);
-            Mat4 model = mat4_mul(mat4_translate(pos.x, pos.y, pos.z), modelRS);
-
-            glUniformMatrix4fv(locModel, 1, GL_FALSE, model.m);
-            glUniform1f(locBandLevel, bandLevel);
-
-            glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(sphere.indices.size()), GL_UNSIGNED_INT, nullptr);
-        }
+        glDrawArrays(GL_POINTS, 0, particleCount);
 
         glBindVertexArray(0);
 
@@ -933,7 +1049,6 @@ int main()
 
     glDeleteVertexArrays(1, &vao);
     glDeleteBuffers(1, &vbo);
-    glDeleteBuffers(1, &ebo);
     glDeleteProgram(program);
 
     ma_engine_uninit(&engine);
