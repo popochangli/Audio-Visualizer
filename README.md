@@ -8,10 +8,10 @@ This project implements a 3D audio visualizer using OpenGL with:
 
 ## Build (macOS)
 
-1. Install dependencies (GLFW via Homebrew):
+1. Install dependencies (GLFW and cmake via Homebrew):
 
 ```bash
-brew install glfw
+brew install glfw cmake
 ```
 
 2. Configure and build with CMake:
